@@ -1,0 +1,74 @@
+# Namespace is NOT set here - it comes from how the chart is installed
+# (`helm install -n ecommerce ...`, or a FluxCD HelmRelease's spec.targetNamespace).
+# Every template below uses {{ .Release.Namespace }}, never a hardcoded name.
+
+image:
+  # Each service's image is "{repository}/<service>:{tag}", e.g.
+  # local-build.cav-test.com/ecommerce/order-service:42
+  repository: local-build.cav-test.com/ecommerce
+  tag: latest
+  pullPolicy: IfNotPresent
+
+ingress:
+  className: traefik
+  # shop.<domainSuffix>, auth.<domainSuffix>, products.<domainSuffix>, orders.<domainSuffix>, rabbitmq.<domainSuffix>
+  domainSuffix: "65.19.151.234.nip.io"
+
+# ---------------------------------------------------------------------------
+# Postgres connection. host/port are a SINGLE shared value for all three
+# services - auth/product/order only differ by database NAME, not by host.
+#
+# THIS is the block the Jenkins pipeline overwrites after the TDM clone step:
+# TdmCloneLifecycleExecutor publishes TDM_CONNECT_HOST / TDM_CONNECT_PORT as
+# build env vars once a Kubernetes-mode clone is ready (an in-cluster DNS
+# name like tdm-postgresql-<id>-<hash>.ecommerce.svc.cluster.local:5432) -
+# the pipeline's "Update Git Manifests & Deploy" stage patches database.host/
+# database.port here, commits, and pushes; Flux's HelmRelease picks up the
+# commit and re-renders the Secret with the new host, rolling every pod that
+# reads DATABASE_URL from it.
+# ---------------------------------------------------------------------------
+database:
+  host: postgres
+  port: 5432
+  user: ecommerce
+  password: ecommerce123
+  names:
+    auth: ecommerce_auth
+    product: ecommerce_products
+    order: ecommerce_orders
+
+# In-cluster Postgres StatefulSet - OFF by default because the `database`
+# block above is expected to point at a TDM-provisioned clone instead. Turn
+# this on only for a standalone run with no TDM behind it (and point
+# database.host/port back at "postgres"/5432 to match).
+postgres:
+  enabled: false
+  storage: 5Gi
+
+mongodb:
+  storage: 5Gi
+
+redis:
+  storage: 1Gi
+
+rabbitmq:
+  storage: 2Gi
+
+secrets:
+  jwtSecret: super-secret-jwt-key-change-in-production
+  jwtRefreshSecret: super-secret-refresh-key-change-in-production
+  mongoUser: ecommerce
+  mongoPassword: ecommerce123
+  rabbitmqUser: ecommerce
+  rabbitmqPassword: ecommerce123
+  cloudinaryCloudName: your-cloud
+  cloudinaryApiKey: your-key
+  cloudinaryApiSecret: your-secret
+  stripeSecretKey: sk_test_placeholder
+  stripeWebhookSecret: whsec_placeholder
+  resendApiKey: re_placeholder
+
+config:
+  jwtExpiresIn: 15m
+  jwtRefreshExpiresIn: 7d
+  fromEmail: noreply@ecommerce.com

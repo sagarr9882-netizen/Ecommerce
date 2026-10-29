@@ -1,0 +1,23 @@
+# Renders charts/ecommerce from the GitRepository above into the "ecommerce"
+# namespace. Deliberately no `spec.values` override here - the chart's own
+# values.yaml (inside the git repo) is the single source of truth, and the
+# Jenkins pipeline edits THAT file directly (image.tag, database.host,
+# database.port) rather than this HelmRelease object, so there is only one
+# place values can drift from what's actually running.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ecommerce
+  namespace: flux-system
+spec:
+  interval: 1m
+  chart:
+    spec:
+      chart: charts/ecommerce
+      sourceRef:
+        kind: GitRepository
+        name: ecommerce-chart
+      reconcileStrategy: Revision
+  install:
+    createNamespace: true
+  targetNamespace: ecommerce

@@ -1,0 +1,221 @@
+// eShop ecommerce microservices - build, push, TDM clone, GitOps update.
+// Modeled on the Boutique reference pipeline's own structure (discoverServices /
+// executeBuildAndPush / "Update Git Manifests & Deploy" stage), but:
+//   - targets the eShop services (auth/product/order/notification/frontend)
+//     instead of Boutique's,
+//   - uses the Helm chart in sagarr9882-netizen/Ecommerce (charts/ecommerce)
+//     instead of sed-patching a plain manifest directly,
+//   - adds one new stage that runs the TDM plugin's Kubernetes-mode clone
+//     step and folds its connection host/port into the SAME values.yaml
+//     commit as the image tag, so Flux's HelmRelease re-renders both at once.
+import groovy.transform.Field
+
+@Field Map SERVICE_DIGESTS = Collections.synchronizedMap([:])
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 240, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    parameters {
+        string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'eShop app-source branch to build')
+        string(name: 'TARGET_SERVICES', defaultValue: '', description: 'Comma-separated services to build (empty = all discovered under src/)')
+
+        string(name: 'GITOPS_REPO_URL', defaultValue: 'https://github.com/sagarr9882-netizen/Ecommerce.git', description: 'Repo holding charts/ecommerce (the one Flux watches)')
+        string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch Flux\'s GitRepository tracks')
+        string(name: 'GITOPS_CRED_ID', defaultValue: 'github-ecommerce-pat', description: 'Jenkins credentials ID (username+PAT) with push access to GITOPS_REPO_URL')
+
+        string(name: 'TDM_DEFINITION_NAME', defaultValue: 'Ecommerce_test', description: 'TDM definition to deploy/clone from')
+        string(name: 'TDM_CONNECTION_ID', defaultValue: '', description: 'TDM service connection ID (leave blank to use direct Base URL/API Token below)')
+        string(name: 'TDM_KUBERNETES_CLUSTER_NAME', defaultValue: '', description: 'Kubernetes cluster name as registered in TDM (required - target placement is always kubernetes here)')
+        string(name: 'TDM_KUBERNETES_NAMESPACE', defaultValue: 'ecommerce', description: 'Namespace TDM provisions the clone into')
+
+        booleanParam(name: 'Run_Build_And_Push', defaultValue: true, description: 'Build + push the eShop images')
+        booleanParam(name: 'Run_Tdm_Clone', defaultValue: true, description: 'Run the TDM deploy + clone step')
+        booleanParam(name: 'Run_GitOps_Update', defaultValue: true, description: 'Patch charts/ecommerce/values.yaml and push (triggers Flux)')
+    }
+
+    environment {
+        REGISTRY  = "local-build.cav-test.com"
+        NAMESPACE = "ecommerce"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Build + Push Images') {
+            when { expression { return params.Run_Build_And_Push } }
+            steps {
+                script { executeBuildAndPush() }
+            }
+        }
+
+        // TDM step itself comes from the TDM Jenkins plugin (com.cavisson.jenkins.tdm) -
+        // same "tdmCicd" Pipeline step used elsewhere in this plugin family. createClone
+        // is always true and targetPlacement is always "kubernetes" here because this
+        // stage's whole point is handing order/auth/product services a cloned Postgres
+        // reachable by in-cluster DNS - a host-mode clone wouldn't be reachable from pods.
+        stage('TDM Deploy + Clone') {
+            when { expression { return params.Run_Tdm_Clone } }
+            steps {
+                script {
+                    def tdmResult = tdmCicd(
+                        connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
+                        cavServiceConnectionId: params.TDM_CONNECTION_ID,
+                        definitionName: params.TDM_DEFINITION_NAME,
+                        createClone: true,
+                        targetPlacement: 'kubernetes',
+                        kubernetesClusterName: params.TDM_KUBERNETES_CLUSTER_NAME,
+                        kubernetesNamespace: params.TDM_KUBERNETES_NAMESPACE,
+                        resultLogLevel: 'info'
+                    )
+
+                    if (tdmResult.cloneSkipped) {
+                        // Definition isn't master_db - nothing to clone from (TdmExecutor
+                        // already logged why). Carry on without a clone: GitOps update
+                        // below will still patch the image tag, just not database.host/port.
+                        echo "TDM clone skipped: ${tdmResult.cloneSkipReason}"
+                        env.TDM_CLONE_READY = "false"
+                    } else {
+                        // Published by TdmCloneLifecycleExecutor - see TDM_CONNECT_HOST/
+                        // TDM_CONNECT_PORT in that file. Already in env at this point via
+                        // CavissonEnvironmentPublisher, re-read here just to fail fast with
+                        // a clear message if they are somehow missing.
+                        if (!env.TDM_CONNECT_HOST?.trim() || !env.TDM_CONNECT_PORT?.trim()) {
+                            error("TDM clone reported ready but TDM_CONNECT_HOST/TDM_CONNECT_PORT were not published - check the TDM Deploy + Clone step's own log above.")
+                        }
+                        echo "TDM clone ready: ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}"
+                        env.TDM_CLONE_READY = "true"
+                    }
+                }
+            }
+        }
+
+        stage('Update GitOps Repo & Let Flux Deploy') {
+            when { expression { return params.Run_GitOps_Update } }
+            steps {
+                script { updateHelmValuesAndPush() }
+            }
+        }
+    }
+
+    post {
+        success { script { println "PIPELINE COMPLETED SUCCESSFULLY" } }
+        failure { script { println "PIPELINE FAILED" } }
+        always  { script { cleanWs() } }
+    }
+}
+
+//======================================================================
+// HELPER FUNCTIONS
+//======================================================================
+
+def discoverServices() {
+    def services = []
+    findFiles(glob: "src/**/Dockerfile").each {
+        services.add(it.path.tokenize('/')[1])
+    }
+    return services.unique()
+}
+
+@NonCPS
+def extractDigest(String pushOutput) {
+    def matcher = (pushOutput =~ /digest:\s*(sha256:[a-f0-9]+)/)
+    return matcher.find() ? matcher.group(1) : null
+}
+
+def executeBuildAndPush() {
+    def discovered = discoverServices()
+    def SERVICES = params.TARGET_SERVICES?.trim()
+        ? params.TARGET_SERVICES.split(',').collect { it.trim() }.findAll { discovered.contains(it) }
+        : discovered
+
+    if (SERVICES.isEmpty()) error "No services to build (discovered: ${discovered}, requested: ${params.TARGET_SERVICES})"
+    echo "Building: ${SERVICES}"
+
+    withCredentials([usernamePassword(credentialsId: 'san-artifact', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+        sh "echo \$REG_PASS | docker login ${env.REGISTRY} -u \$REG_USER --password-stdin"
+    }
+
+    Map builds = [:]
+    SERVICES.each { service ->
+        builds[service] = {
+            def dockerfiles = findFiles(glob: "src/${service}/**/Dockerfile")
+            if (dockerfiles.size() == 0) error "No Dockerfile found for '${service}'"
+            dir(dockerfiles[0].path.replace("/Dockerfile", "")) {
+                sh "docker build --no-cache --network host -t ${env.REGISTRY}/${env.NAMESPACE}/${service}:${env.IMAGE_TAG} ."
+            }
+        }
+    }
+    parallel builds
+
+    Map pushes = [:]
+    SERVICES.each { service ->
+        pushes[service] = {
+            def imageRef = "${env.REGISTRY}/${env.NAMESPACE}/${service}:${env.IMAGE_TAG}"
+            def pushOutput = sh(script: "docker push ${imageRef}", returnStdout: true).trim()
+            echo pushOutput
+            SERVICE_DIGESTS[service] = extractDigest(pushOutput)
+            sh "docker rmi ${imageRef} || true"
+        }
+    }
+    parallel pushes
+    sh 'docker image prune -f'
+}
+
+/**
+ * Clones the GitOps repo, patches charts/ecommerce/values.yaml's image.tag
+ * (always) and database.host/database.port (only if the TDM clone step
+ * actually produced one this run - env.TDM_CLONE_READY), commits, and
+ * pushes. Flux's GitRepository (flux/git-repository.yaml in that same repo)
+ * picks up the new commit on its next poll and the HelmRelease re-renders
+ * the chart - no kubectl/helm call from Jenkins itself, same separation the
+ * reference pipeline's own "Update Git Manifests & Deploy" stage uses
+ * (Jenkins only ever touches Git; the cluster-side controller does the
+ * actual rollout).
+ */
+def updateHelmValuesAndPush() {
+    withCredentials([usernamePassword(credentialsId: params.GITOPS_CRED_ID, usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+        def rawUrl = params.GITOPS_REPO_URL.replace("https://", "")
+        def authedRemote = "https://${GIT_USER}:${GIT_PASS}@${rawUrl}"
+
+        sh """
+            rm -rf gitops-repo
+            git clone --branch ${params.GITOPS_BRANCH} --depth 1 "${authedRemote}" gitops-repo
+            git -C gitops-repo config user.name "CI/CD Pipeline"
+            git -C gitops-repo config user.email "cicd@cav-test.com"
+        """
+
+        def values = "gitops-repo/charts/ecommerce/values.yaml"
+
+        sh """
+            sed -i "s|^  tag: .*|  tag: \\"${env.IMAGE_TAG}\\"|" "${values}"
+        """
+
+        if (env.TDM_CLONE_READY == "true") {
+            sh """
+                sed -i "s|^  host: .*|  host: ${env.TDM_CONNECT_HOST}|" "${values}"
+                sed -i "s|^  port: .*|  port: ${env.TDM_CONNECT_PORT}|" "${values}"
+            """
+            echo "values.yaml: image.tag=${env.IMAGE_TAG}, database.host=${env.TDM_CONNECT_HOST}, database.port=${env.TDM_CONNECT_PORT}"
+        } else {
+            echo "values.yaml: image.tag=${env.IMAGE_TAG} (database.host/port left as-is - no TDM clone this run)"
+        }
+
+        sh """
+            cd gitops-repo
+            git add charts/ecommerce/values.yaml
+            if git diff-index --quiet HEAD --; then
+                echo "No changes to values.yaml - skipping commit/push."
+            else
+                git commit -m "CI/CD: image ${env.IMAGE_TAG}${env.TDM_CLONE_READY == 'true' ? ", TDM clone ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}" : ""} - Build #${env.BUILD_NUMBER}"
+                git push "${authedRemote}" HEAD:${params.GITOPS_BRANCH}
+                echo "Pushed - Flux will reconcile charts/ecommerce on its next poll."
+            fi
+        """
+    }
+}

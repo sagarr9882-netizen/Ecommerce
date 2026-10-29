@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecommerce-config
+  namespace: {{ .Release.Namespace }}
+data:
+  FRONTEND_URL: "http://shop.{{ .Values.ingress.domainSuffix }}"
+  JWT_EXPIRES_IN: {{ .Values.config.jwtExpiresIn | quote }}
+  JWT_REFRESH_EXPIRES_IN: {{ .Values.config.jwtRefreshExpiresIn | quote }}
+  FROM_EMAIL: {{ .Values.config.fromEmail | quote }}

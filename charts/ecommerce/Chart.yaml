@@ -1,0 +1,10 @@
+apiVersion: v2
+name: ecommerce
+description: >
+  eShop ecommerce microservices demo (auth/product/order/notification/frontend),
+  wired so its Postgres connection can point at a TDM-provisioned clone instead
+  of an in-cluster StatefulSet. See values.yaml's `database` block and the
+  repo README for how the CI/CD pipeline updates it after a TDM clone run.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,15 @@
+# Points Flux's source-controller at THIS repo (the chart lives in it, under
+# charts/ecommerce). Flux re-fetches on every `interval` and the HelmRelease
+# below re-renders whenever this GitRepository's revision changes - which is
+# exactly what happens when the Jenkins pipeline commits a new image tag or
+# TDM connection host/port into charts/ecommerce/values.yaml and pushes.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: ecommerce-chart
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/sagarr9882-netizen/Ecommerce
+  ref:
+    branch: main

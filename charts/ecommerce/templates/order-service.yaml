@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: order-service
+  ports:
+    - port: 3003
+      targetPort: 3003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      initContainers:
+        - name: wait-for-deps
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - |
+              for h in "{{ .Values.database.host }} {{ .Values.database.port }}" "rabbitmq 5672"; do
+                set -- $h
+                until nc -z "$1" "$2"; do echo "waiting for $1"; sleep 2; done
+              done
+      containers:
+        - name: order-service
+          image: "{{ .Values.image.repository }}/order-service:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 3003
+          env:
+            - name: PORT
+              value: "3003"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: ORDER_DATABASE_URL } }
+            - name: RABBITMQ_URL
+              valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: RABBITMQ_URL } }
+            - name: STRIPE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: STRIPE_SECRET_KEY } }
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: STRIPE_WEBHOOK_SECRET } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: JWT_SECRET } }
+            - name: FRONTEND_URL
+              valueFrom: { configMapKeyRef: { name: ecommerce-config, key: FRONTEND_URL } }
+          readinessProbe:
+            tcpSocket: { port: 3003 }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 3003 }
+            initialDelaySeconds: 45
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
