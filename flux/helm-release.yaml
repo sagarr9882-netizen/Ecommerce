@@ -1,14 +1,17 @@
-# Renders charts/ecommerce from the GitRepository above into the "ecommerce"
-# namespace. Deliberately no `spec.values` override here - the chart's own
-# values.yaml (inside the git repo) is the single source of truth, and the
-# Jenkins pipeline edits THAT file directly (image.tag, database.host,
-# database.port) rather than this HelmRelease object, so there is only one
-# place values can drift from what's actually running.
+# Deploys charts/ecommerce (same repo) into the "ecommerce" namespace.
+#
+# No GitRepository is defined here on purpose: the cavisson-agent that
+# bootstraps Flux against THIS repo (FLUX_GIT_URL=.../sagarr9882-netizen/Ecommerce,
+# FLUX_GIT_PATH=./flux - see ../README.md) auto-creates its own GitRepository
+# named "flux-system" in the "flux-system" namespace, tracking this same repo.
+# Since the chart already lives in the repo Flux is bootstrapped against,
+# this HelmRelease just references that existing source directly instead of
+# creating a second, redundant GitRepository pointed at the same place.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: ecommerce
-  namespace: flux-system
+  namespace: ecommerce
 spec:
   interval: 1m
   chart:
@@ -16,8 +19,13 @@ spec:
       chart: charts/ecommerce
       sourceRef:
         kind: GitRepository
-        name: ecommerce-chart
+        name: flux-system
+        namespace: flux-system
       reconcileStrategy: Revision
   install:
     createNamespace: true
-  targetNamespace: ecommerce
+  # Deliberately no `spec.values` override - the chart's own values.yaml
+  # (charts/ecommerce/values.yaml, inside this same repo) is the single
+  # source of truth, and the Jenkins pipeline edits THAT file directly
+  # (image.tag, database.host, database.port) rather than this object, so
+  # there is only one place values can drift from what's actually running.

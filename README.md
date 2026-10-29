@@ -8,8 +8,9 @@ controllers (running in the cluster) do the actual `helm upgrade`.
 charts/ecommerce/     Helm chart for the eShop app (converted from the plain
                        k8s/*.yaml manifests you had - same Services/
                        Deployments/StatefulSets, now templated)
-flux/                 GitRepository + HelmRelease that tell Flux to watch
-                       THIS repo and render charts/ecommerce
+flux/                 Namespace + HelmRelease that render charts/ecommerce -
+                       this is the path a DEDICATED cavisson-agent for this
+                       app should be bootstrapped against (FLUX_GIT_PATH=./flux)
 jenkins/Jenkinsfile   Build -> TDM clone -> patch values.yaml -> push
 ```
 
@@ -33,35 +34,35 @@ jenkins/Jenkinsfile   Build -> TDM clone -> patch values.yaml -> push
 
 ## One-time setup
 
-1. **Push this repo's content to `sagarr9882-netizen/Ecommerce`** (main branch).
-2. **Point Flux at it.** `flux/git-repository.yaml` + `flux/helm-release.yaml`
-   are the standard Flux objects for "watch this repo, render this chart" -
-   apply them to wherever your cluster's Flux `source-controller`/
-   `helm-controller` actually run:
-   - If Flux was bootstrapped the usual way (`flux bootstrap github ...`),
-     commit these two files into whatever repo/path that bootstrap watches.
-   - **Your cluster-agent's own Flux install is different from the above** -
-     its `FLUX_GIT_URL`/`FLUX_GIT_BRANCH`/`FLUX_GIT_PATH` env vars currently
-     point at `dileep165794/flux-cd`, branch `publish`, path
-     `./application/boutique-app-1791205336986` - a DIFFERENT repo/path than
-     this one. I don't have visibility into that repo or into whether your
-     Cavisson/TDM dashboard has an "add application" flow that provisions a
-     new `./application/<id>` path like that one automatically. Two ways
-     forward, and I'd check which applies before doing either by hand:
-     - If there's a UI flow for registering a new app/cluster target in your
-       TDM/Cavisson dashboard, use that - it likely creates the
-       `./application/<id>` folder in `dileep165794/flux-cd` for you,
-       pointing at a chart source. Point that chart source at THIS repo
-       (`sagarr9882-netizen/Ecommerce`, path `charts/ecommerce`) instead of
-       wherever it defaults to.
-     - Otherwise, add a folder under `dileep165794/flux-cd` at
-       `./application/<something>` containing `flux/git-repository.yaml` +
-       `flux/helm-release.yaml` from this repo (pointing at
-       `sagarr9882-netizen/Ecommerce`), then update the `cluster-agent`
-       Deployment's `FLUX_GIT_PATH` to that new folder and restart it so it
-       re-applies - **this changes what your cluster-agent manages
-       cluster-wide, so I'd confirm with whoever owns that agent/repo before
-       changing it**, rather than silently repoint a shared fleet path.
+1. **Push this repo's content to `sagarr9882-netizen/Ecommerce`** (main branch) -
+   done.
+2. **Deploy a dedicated cavisson-agent for this app, bootstrapped against
+   THIS repo** - not the shared boutique-app one. Same shape as the
+   cluster-agent manifest you already have, with the Flux env vars pointed
+   here instead:
+   ```yaml
+   env:
+     - name: FLUX_ENABLED
+       value: "true"
+     - name: FLUX_GIT_URL
+       value: "https://github.com/sagarr9882-netizen/Ecommerce"
+     - name: FLUX_GIT_BRANCH
+       value: "main"
+     - name: FLUX_GIT_PATH
+       value: "./flux"
+     - name: FLUX_VERSION
+       value: "v2.8.6"
+     - name: FLUX_REGISTRY
+       value: "ghcr.io/fluxcd"
+   ```
+   That makes the agent bootstrap its own Flux `GitRepository` named
+   `flux-system` (in the `flux-system` namespace) against this repo, with its
+   root `Kustomization` watching `./flux` - which is exactly `flux/namespace.yaml`
+   + `flux/helm-release.yaml` in this repo. No `GitRepository` object is
+   committed here, on purpose: the agent creates that source for you, and
+   `flux/helm-release.yaml` just references it (`sourceRef: flux-system`)
+   since the chart already lives in the same repo Flux is bootstrapped
+   against - no second, redundant source needed.
 3. **Create the Jenkins credential** `github-ecommerce-pat` (username + a
    GitHub PAT with push access to this repo) - that's `GITOPS_CRED_ID` in
    the Jenkinsfile. Swap in your TDM git-integration config instead (same
