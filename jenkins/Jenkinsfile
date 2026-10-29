@@ -8,6 +8,12 @@
 //   - adds one new stage that runs the TDM plugin's Kubernetes-mode clone
 //     step and folds its connection host/port into the SAME values.yaml
 //     commit as the image tag, so Flux's HelmRelease re-renders both at once.
+//   - pushes images to DOCKER HUB rather than a private registry/Artifactory
+//     (no Artifactory login available here) - the cluster then pulls them
+//     back down over the public internet, same as any public image. Docker
+//     Hub only allows "namespace/repo" (no deeper path), so each service's
+//     repo name is "<DOCKERHUB_NAMESPACE>/ecommerce-<service>" - see
+//     executeBuildAndPush() and charts/ecommerce/values.yaml's image block.
 import groovy.transform.Field
 
 @Field Map SERVICE_DIGESTS = Collections.synchronizedMap([:])
@@ -26,6 +32,9 @@ pipeline {
         string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'eShop app-source branch to build')
         string(name: 'TARGET_SERVICES', defaultValue: '', description: 'Comma-separated services to build (empty = all discovered under src/)')
 
+        string(name: 'DOCKERHUB_NAMESPACE', defaultValue: '', description: 'Your Docker Hub username or org - images push to <this>/ecommerce-<service> (REQUIRED, must also be set as charts/ecommerce/values.yaml image.repository once)')
+        string(name: 'DOCKERHUB_CRED_ID', defaultValue: 'dockerhub-creds', description: 'Jenkins credentials ID (username + password/access-token) with push access on Docker Hub')
+
         string(name: 'GITOPS_REPO_URL', defaultValue: 'https://github.com/sagarr9882-netizen/Ecommerce.git', description: 'Repo holding charts/ecommerce (the one Flux watches)')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch Flux\'s GitRepository tracks')
         string(name: 'GITOPS_CRED_ID', defaultValue: 'github-ecommerce-pat', description: 'Jenkins credentials ID (username+PAT) with push access to GITOPS_REPO_URL')
@@ -41,8 +50,6 @@ pipeline {
     }
 
     environment {
-        REGISTRY  = "local-build.cav-test.com"
-        NAMESPACE = "ecommerce"
         IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
@@ -135,10 +142,13 @@ def executeBuildAndPush() {
         : discovered
 
     if (SERVICES.isEmpty()) error "No services to build (discovered: ${discovered}, requested: ${params.TARGET_SERVICES})"
-    echo "Building: ${SERVICES}"
+    if (!params.DOCKERHUB_NAMESPACE?.trim()) error "DOCKERHUB_NAMESPACE is required - set it to your Docker Hub username/org."
+    echo "Building: ${SERVICES} -> docker.io/${params.DOCKERHUB_NAMESPACE}/ecommerce-<service>:${env.IMAGE_TAG}"
 
-    withCredentials([usernamePassword(credentialsId: 'san-artifact', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-        sh "echo \$REG_PASS | docker login ${env.REGISTRY} -u \$REG_USER --password-stdin"
+    // Docker Hub, not a private registry - no host argument needed (docker.io
+    // is the default), just the account that owns DOCKERHUB_NAMESPACE.
+    withCredentials([usernamePassword(credentialsId: params.DOCKERHUB_CRED_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+        sh "echo \$REG_PASS | docker login -u \$REG_USER --password-stdin"
     }
 
     Map builds = [:]
@@ -147,7 +157,7 @@ def executeBuildAndPush() {
             def dockerfiles = findFiles(glob: "src/${service}/**/Dockerfile")
             if (dockerfiles.size() == 0) error "No Dockerfile found for '${service}'"
             dir(dockerfiles[0].path.replace("/Dockerfile", "")) {
-                sh "docker build --no-cache --network host -t ${env.REGISTRY}/${env.NAMESPACE}/${service}:${env.IMAGE_TAG} ."
+                sh "docker build --no-cache --network host -t ${params.DOCKERHUB_NAMESPACE}/ecommerce-${service}:${env.IMAGE_TAG} ."
             }
         }
     }
@@ -156,7 +166,7 @@ def executeBuildAndPush() {
     Map pushes = [:]
     SERVICES.each { service ->
         pushes[service] = {
-            def imageRef = "${env.REGISTRY}/${env.NAMESPACE}/${service}:${env.IMAGE_TAG}"
+            def imageRef = "${params.DOCKERHUB_NAMESPACE}/ecommerce-${service}:${env.IMAGE_TAG}"
             def pushOutput = sh(script: "docker push ${imageRef}", returnStdout: true).trim()
             echo pushOutput
             SERVICE_DIGESTS[service] = extractDigest(pushOutput)

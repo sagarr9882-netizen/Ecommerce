@@ -3,9 +3,14 @@
 # Every template below uses {{ .Release.Namespace }}, never a hardcoded name.
 
 image:
-  # Each service's image is "{repository}/<service>:{tag}", e.g.
-  # local-build.cav-test.com/ecommerce/order-service:42
-  repository: local-build.cav-test.com/ecommerce
+  # Pulled straight from Docker Hub - no private registry/Artifactory login
+  # needed to pull. Docker Hub repos are only ever "namespace/repo" (no
+  # deeper path segments), so the service name is folded into the repo name
+  # itself: each service's image is "{repository}/ecommerce-<service>:{tag}",
+  # e.g. "sagarr9882/ecommerce-order-service:42".
+  # Set this to YOUR Docker Hub username or org once - the pipeline only
+  # patches `tag` on every build, not `repository`.
+  repository: REPLACE_WITH_YOUR_DOCKERHUB_NAMESPACE
   tag: latest
   pullPolicy: IfNotPresent
 

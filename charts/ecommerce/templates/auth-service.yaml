@@ -31,7 +31,7 @@ spec:
           command: ["sh", "-c", "until nc -z {{ .Values.database.host }} {{ .Values.database.port }}; do echo waiting for postgres; sleep 2; done"]
       containers:
         - name: auth-service
-          image: "{{ .Values.image.repository }}/auth-service:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}/ecommerce-auth-service:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 3001
