@@ -54,6 +54,18 @@ pipeline {
     }
 
     stages {
+        // Explicit checkout, independent of how this job itself is configured (inline
+        // "Pipeline script" vs. "Pipeline script from SCM") - without this, the workspace
+        // is empty/missing and `findFiles(glob: "src/**/Dockerfile")` below fails with
+        // "workspace does not exist". The app source (auth-service/, frontend/,
+        // notification-service/, order-service/, product-service/, each with its own
+        // Dockerfile) now lives under src/ in this SAME repo, alongside charts/flux/jenkins.
+        stage('Checkout eShop Source') {
+            steps {
+                git branch: params.GIT_BRANCH, url: params.GITOPS_REPO_URL
+            }
+        }
+
         stage('Build + Push Images') {
             when { expression { return params.Run_Build_And_Push } }
             steps {
