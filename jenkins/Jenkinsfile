@@ -38,7 +38,9 @@ pipeline {
         string(name: 'GITOPS_CRED_ID', defaultValue: 'github-ecommerce-pat', description: 'Jenkins credentials ID (username+PAT) with push access to GITOPS_REPO_URL')
 
         string(name: 'TDM_DEFINITION_NAME', defaultValue: 'Ecommerce_test', description: 'TDM definition to deploy/clone from')
-        string(name: 'TDM_CONNECTION_ID', defaultValue: '', description: 'TDM service connection ID (leave blank to use direct Base URL/API Token below)')
+        string(name: 'TDM_CONNECTION_ID', defaultValue: '', description: 'ID of a "Cavisson Service Connection" credential (Base URL + API Token together) - leave blank to use TDM_BASE_URL/TDM_API_TOKEN_CRED_ID below instead')
+        string(name: 'TDM_BASE_URL', defaultValue: '', description: 'TDM Dashboard Server base URL, e.g. https://demo-cicd.cav-test.com:4444 - only used when TDM_CONNECTION_ID is blank')
+        string(name: 'TDM_API_TOKEN_CRED_ID', defaultValue: 'cav-tdm-api-token', description: 'Jenkins "Secret text" credential ID holding the TDM API token - only used when TDM_CONNECTION_ID is blank')
         string(name: 'TDM_KUBERNETES_CLUSTER_NAME', defaultValue: '', description: 'Kubernetes cluster name as registered in TDM (required - target placement is always kubernetes here)')
         string(name: 'TDM_KUBERNETES_NAMESPACE', defaultValue: 'ecommerce', description: 'Namespace TDM provisions the clone into')
 
@@ -71,6 +73,8 @@ pipeline {
                     def tdmResult = tdmCicd(
                         connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
                         cavServiceConnectionId: params.TDM_CONNECTION_ID,
+                        baseUrl: params.TDM_BASE_URL,
+                        apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
                         definitionName: params.TDM_DEFINITION_NAME,
                         createClone: true,
                         targetPlacement: 'kubernetes',
