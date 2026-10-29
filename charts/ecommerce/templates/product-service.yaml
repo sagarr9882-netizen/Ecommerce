@@ -38,7 +38,7 @@ spec:
               done
       containers:
         - name: product-service
-          image: "{{ .Values.image.repository }}/ecommerce-product-service:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}/product-service:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 3002

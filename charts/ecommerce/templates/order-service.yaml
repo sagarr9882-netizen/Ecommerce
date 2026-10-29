@@ -38,7 +38,7 @@ spec:
               done
       containers:
         - name: order-service
-          image: "{{ .Values.image.repository }}/ecommerce-order-service:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}/order-service:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 3003

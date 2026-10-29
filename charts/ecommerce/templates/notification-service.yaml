@@ -27,7 +27,7 @@ spec:
               done
       containers:
         - name: notification-service
-          image: "{{ .Values.image.repository }}/ecommerce-notification-service:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}/notification-service:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: RABBITMQ_URL
