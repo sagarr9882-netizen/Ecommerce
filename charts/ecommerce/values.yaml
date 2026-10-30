@@ -40,7 +40,7 @@ ingress:
 # reads DATABASE_URL from it.
 # ---------------------------------------------------------------------------
 database:
-  host: tdm-postgresql-6adf2426120c34c34e709b1f-1cffe6ab.ecommerce.svc.cluster.local
+  host: tdm-postgresql-6adf2426120c34c34e709b1f-cf3c6a82.ecommerce.svc.cluster.local
   port: 5432
   user: ecommerce
   password: ecommerce123
