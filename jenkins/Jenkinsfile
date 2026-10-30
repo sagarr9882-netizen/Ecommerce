@@ -6,8 +6,16 @@
 //   - uses the Helm chart in sagarr9882-netizen/Ecommerce (charts/ecommerce)
 //     instead of sed-patching a plain manifest directly,
 //   - adds one new stage that runs the TDM plugin's Kubernetes-mode clone
-//     step and folds its connection host/port into the SAME values.yaml
+//     step(s) and folds its connection host/port into the SAME values.yaml
 //     commit as the image tag, so Flux's HelmRelease re-renders both at once.
+//     TDM_ACTION picks which TDM steps that stage runs: "TDM Generation +
+//     Clone" (tdmSnapshot then tdmCloneCreate, snapshot name passed through
+//     internally - TDM_SNAPSHOT_NAME unused) or "TDM Cloning" (tdmCloneCreate
+//     alone, against an existing TDM_SNAPSHOT_NAME - no generation step).
+//     Needs the TDM plugin update that adds the tdmSnapshot/tdmCloneCreate
+//     Pipeline steps - see runTdmGenerationAndClone()/runTdmCloningOnly()
+//     below for the commented-out single-step tdmCicd fallback if that
+//     plugin build isn't installed yet.
 //   - pushes images to the Artifactory Docker registry at ARTIFACTORY_REGISTRY
 //     under the "cav-ecommerce" repo - see executeBuildAndPush() and
 //     charts/ecommerce/values.yaml's image block.
@@ -37,7 +45,20 @@ pipeline {
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch Flux\'s GitRepository tracks')
         string(name: 'GITOPS_CRED_ID', defaultValue: 'github-ecommerce-pat', description: 'Jenkins credentials ID (username+PAT) with push access to GITOPS_REPO_URL')
 
-        string(name: 'TDM_DEFINITION_NAME', defaultValue: 'Ecommerce_test', description: 'TDM definition to deploy/clone from')
+        // What TDM should do this run - picked FIRST, because it decides which of the
+        // params below actually matter:
+        //   "TDM Generation + Clone" - runs tdmSnapshot (generate/insert -> Golden DB ->
+        //     Snapshot) off TDM_DEFINITION_NAME, then feeds the Snapshot name IT JUST
+        //     PRODUCED straight into tdmCloneCreate internally - TDM_SNAPSHOT_NAME is
+        //     never read in this mode, the name never comes from a param at all.
+        //   "TDM Cloning" - skips generation entirely and clones directly from an
+        //     EXISTING snapshot - TDM_SNAPSHOT_NAME is required in this mode.
+        // Both modes use TDM_KUBERNETES_CLUSTER_NAME/TDM_KUBERNETES_NAMESPACE.
+        choice(name: 'TDM_ACTION', choices: ['TDM Generation + Clone', 'TDM Cloning'],
+               description: 'TDM Generation + Clone: definitionName -> generate/insert -> snapshot -> clone (TDM_SNAPSHOT_NAME ignored). ' +
+                            'TDM Cloning: clone straight from an existing TDM_SNAPSHOT_NAME, no generation.')
+        string(name: 'TDM_DEFINITION_NAME', defaultValue: 'Ecommerce_test', description: 'TDM definition to deploy/clone from - used in both TDM_ACTION modes')
+        string(name: 'TDM_SNAPSHOT_NAME', defaultValue: '', description: 'Existing snapshot to clone from - required ONLY when TDM_ACTION = "TDM Cloning"; ignored (and not needed) for "TDM Generation + Clone", which supplies its own freshly-created snapshot name internally')
         string(name: 'TDM_CONNECTION_ID', defaultValue: '', description: 'ID of a "Cavisson Service Connection" credential (Base URL + API Token together) - leave blank to use TDM_BASE_URL/TDM_API_TOKEN_CRED_ID below instead')
         string(name: 'TDM_BASE_URL', defaultValue: '', description: 'TDM Dashboard Server base URL, e.g. https://demo-cicd.cav-test.com:4444 - only used when TDM_CONNECTION_ID is blank')
         string(name: 'TDM_API_TOKEN_CRED_ID', defaultValue: 'cav-tdm-api-token', description: 'Jenkins "Secret text" credential ID holding the TDM API token - only used when TDM_CONNECTION_ID is blank')
@@ -81,45 +102,50 @@ pipeline {
             }
         }
 
-        // TDM step itself comes from the TDM Jenkins plugin (com.cavisson.jenkins.tdm) -
-        // same "tdmCicd" Pipeline step used elsewhere in this plugin family. createClone
-        // is always true and targetPlacement is always "kubernetes" here because this
-        // stage's whole point is handing order/auth/product services a cloned Postgres
-        // reachable by in-cluster DNS - a host-mode clone wouldn't be reachable from pods.
+        // TDM steps come from the TDM Jenkins plugin (com.cavisson.jenkins.tdm) -
+        // tdmSnapshot ("deploy till snapshot") and tdmCloneCreate ("clone create/run from
+        // an existing snapshot"), the two standalone steps split out of the old combined
+        // tdmCicd step specifically so this stage can branch on TDM_ACTION:
+        //   "TDM Generation + Clone" -> runTdmGenerationAndClone(): tdmSnapshot first,
+        //     its own snapshotName output fed straight into tdmCloneCreate - never a param.
+        //   "TDM Cloning" -> runTdmCloningOnly(): tdmCloneCreate alone, against the
+        //     existing snapshot named in TDM_SNAPSHOT_NAME - no generation step at all.
+        // targetPlacement is always "kubernetes" in both paths because this stage's whole
+        // point is handing order/auth/product services a cloned Postgres reachable by
+        // in-cluster DNS - a host-mode clone wouldn't be reachable from pods.
+        //
+        // REQUIRES the updated TDM plugin (tdmSnapshot/tdmCloneCreate steps) to be built
+        // and installed on this Jenkins - this stage fails immediately with "no such DSL
+        // method" otherwise. The old single-call tdmCicd(createClone: true, ...) form is
+        // kept below, commented out, as a fallback if that plugin update isn't live yet.
         stage('TDM Deploy + Clone') {
             when { expression { return params.Run_Tdm_Clone } }
             steps {
                 script {
-                    def tdmResult = tdmCicd(
-                        connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
-                        cavServiceConnectionId: params.TDM_CONNECTION_ID,
-                        baseUrl: params.TDM_BASE_URL,
-                        apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
-                        definitionName: params.TDM_DEFINITION_NAME,
-                        createClone: true,
-                        targetPlacement: 'kubernetes',
-                        kubernetesClusterName: params.TDM_KUBERNETES_CLUSTER_NAME,
-                        kubernetesNamespace: params.TDM_KUBERNETES_NAMESPACE,
-                        resultLogLevel: 'info'
-                    )
-
-                    if (tdmResult.cloneSkipped) {
-                        // Definition isn't master_db - nothing to clone from (TdmExecutor
-                        // already logged why). Carry on without a clone: GitOps update
-                        // below will still patch the image tag, just not database.host/port.
-                        echo "TDM clone skipped: ${tdmResult.cloneSkipReason}"
-                        env.TDM_CLONE_READY = "false"
+                    if (params.TDM_ACTION == 'TDM Cloning') {
+                        runTdmCloningOnly()
                     } else {
-                        // Published by TdmCloneLifecycleExecutor - see TDM_CONNECT_HOST/
-                        // TDM_CONNECT_PORT in that file. Already in env at this point via
-                        // CavissonEnvironmentPublisher, re-read here just to fail fast with
-                        // a clear message if they are somehow missing.
-                        if (!env.TDM_CONNECT_HOST?.trim() || !env.TDM_CONNECT_PORT?.trim()) {
-                            error("TDM clone reported ready but TDM_CONNECT_HOST/TDM_CONNECT_PORT were not published - check the TDM Deploy + Clone step's own log above.")
-                        }
-                        echo "TDM clone ready: ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}"
-                        env.TDM_CLONE_READY = "true"
+                        runTdmGenerationAndClone()
                     }
+                    // --- Old combined-step fallback (needs only tdmCicd, no plugin update) ---
+                    // def tdmResult = tdmCicd(
+                    //     connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
+                    //     cavServiceConnectionId: params.TDM_CONNECTION_ID,
+                    //     baseUrl: params.TDM_BASE_URL,
+                    //     apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
+                    //     definitionName: params.TDM_DEFINITION_NAME,
+                    //     createClone: true,
+                    //     targetPlacement: 'kubernetes',
+                    //     kubernetesClusterName: params.TDM_KUBERNETES_CLUSTER_NAME,
+                    //     kubernetesNamespace: params.TDM_KUBERNETES_NAMESPACE,
+                    //     resultLogLevel: 'info'
+                    // )
+                    // if (tdmResult.cloneSkipped) {
+                    //     echo "TDM clone skipped: ${tdmResult.cloneSkipReason}"
+                    //     env.TDM_CLONE_READY = "false"
+                    // } else {
+                    //     finalizeCloneResult()
+                    // }
                 }
             }
         }
@@ -207,6 +233,85 @@ def executeBuildAndPush() {
     }
     parallel pushes
     sh 'docker image prune -f'
+}
+
+/**
+ * TDM_ACTION = "TDM Generation + Clone". Runs tdmSnapshot (definitionName only -
+ * generate/insert -> Golden DB -> Snapshot), then feeds the snapshotName IT JUST
+ * RETURNED straight into tdmCloneCreate - TDM_SNAPSHOT_NAME is never read here, the name
+ * is never a param in this mode, exactly as asked: "we will not take snapshot name in
+ * this case because it will pass through code after generation of snapshot."
+ */
+def runTdmGenerationAndClone() {
+    def snap = tdmSnapshot(
+        connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
+        cavServiceConnectionId: params.TDM_CONNECTION_ID,
+        baseUrl: params.TDM_BASE_URL,
+        apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
+        definitionName: params.TDM_DEFINITION_NAME,
+        resultLogLevel: 'info'
+    )
+    echo "Snapshot created: ${snap.snapshotName} (Golden DB: ${snap.goldenDbName})"
+
+    if (!snap.snapshotName?.trim()) {
+        // Definition isn't master_db (data generation + insert only) - nothing to clone
+        // from. Not a failure: the generation itself already succeeded. Mirrors the old
+        // combined tdmCicd step's own "cloneSkipped" handling.
+        echo "Definition '${params.TDM_DEFINITION_NAME}' produced no snapshot (not a master_db definition) - skipping clone."
+        env.TDM_CLONE_READY = "false"
+        return
+    }
+
+    tdmCloneCreate(
+        connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
+        cavServiceConnectionId: params.TDM_CONNECTION_ID,
+        baseUrl: params.TDM_BASE_URL,
+        apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
+        definitionName: params.TDM_DEFINITION_NAME,
+        snapshotName: snap.snapshotName,
+        targetPlacement: 'kubernetes',
+        kubernetesClusterName: params.TDM_KUBERNETES_CLUSTER_NAME,
+        kubernetesNamespace: params.TDM_KUBERNETES_NAMESPACE,
+        resultLogLevel: 'info'
+    )
+    finalizeCloneResult()
+}
+
+/**
+ * TDM_ACTION = "TDM Cloning". No generation step at all - clones straight from the
+ * EXISTING snapshot named in TDM_SNAPSHOT_NAME, as asked: "if select tdm cloning then
+ * snapshot name and clustername and namespace."
+ */
+def runTdmCloningOnly() {
+    if (!params.TDM_SNAPSHOT_NAME?.trim()) {
+        error("TDM_SNAPSHOT_NAME is required when TDM_ACTION = 'TDM Cloning'.")
+    }
+    tdmCloneCreate(
+        connectionMode: params.TDM_CONNECTION_ID?.trim() ? 'serviceConnection' : 'direct',
+        cavServiceConnectionId: params.TDM_CONNECTION_ID,
+        baseUrl: params.TDM_BASE_URL,
+        apiTokenCredentialId: params.TDM_API_TOKEN_CRED_ID,
+        definitionName: params.TDM_DEFINITION_NAME,
+        snapshotName: params.TDM_SNAPSHOT_NAME,
+        targetPlacement: 'kubernetes',
+        kubernetesClusterName: params.TDM_KUBERNETES_CLUSTER_NAME,
+        kubernetesNamespace: params.TDM_KUBERNETES_NAMESPACE,
+        resultLogLevel: 'info'
+    )
+    finalizeCloneResult()
+}
+
+/** Published by TdmCloneLifecycleExecutor - see TDM_CONNECT_HOST/TDM_CONNECT_PORT in
+ *  that file. Already in env at this point via CavissonEnvironmentPublisher, re-read
+ *  here just to fail fast with a clear message if they are somehow missing. Shared by
+ *  both TDM_ACTION paths above so updateHelmValuesAndPush() below sees the exact same
+ *  env.TDM_CLONE_READY/TDM_CONNECT_HOST/TDM_CONNECT_PORT contract either way. */
+def finalizeCloneResult() {
+    if (!env.TDM_CONNECT_HOST?.trim() || !env.TDM_CONNECT_PORT?.trim()) {
+        error("TDM clone reported ready but TDM_CONNECT_HOST/TDM_CONNECT_PORT were not published - check the TDM Deploy + Clone step's own log above.")
+    }
+    echo "TDM clone ready: ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}"
+    env.TDM_CLONE_READY = "true"
 }
 
 /**
