@@ -7,8 +7,19 @@ image:
   # "{repository}/<service>:{tag}", e.g.
   # cloud-build.cav-test.com/cav-ecommerce/order-service:42
   repository: cloud-build.cav-test.com/cav-ecommerce
-  tag: "9"
+  tag: latest
   pullPolicy: IfNotPresent
+  # Name of the Kubernetes Secret (kubernetes.io/dockerconfigjson) holding
+  # credentials for the Artifactory registry above. Required because
+  # cloud-build.cav-test.com is private - Jenkins having push access does
+  # NOT give the cluster pull access. Create it once per namespace with:
+  #   kubectl create secret docker-registry artifactory-pull-secret \
+  #     --docker-server=cloud-build.cav-test.com \
+  #     --docker-username=<your-artifactory-username> \
+  #     --docker-password=<your-artifactory-password> \
+  #     --namespace=ecommerce
+  # Leave blank ("") to disable (e.g. if the registry is ever made public).
+  pullSecretName: artifactory-pull-secret
 
 ingress:
   className: traefik
@@ -29,7 +40,7 @@ ingress:
 # reads DATABASE_URL from it.
 # ---------------------------------------------------------------------------
 database:
-  host: tdm-postgresql-6adf2426120c34c34e709b1f-013de670.ecommerce.svc.cluster.local
+  host: postgres
   port: 5432
   user: ecommerce
   password: ecommerce123

@@ -25,6 +25,10 @@ spec:
       labels:
         app: auth-service
     spec:
+      {{- if .Values.image.pullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecretName }}
+      {{- end }}
       initContainers:
         - name: wait-for-postgres
           image: redis:7-alpine

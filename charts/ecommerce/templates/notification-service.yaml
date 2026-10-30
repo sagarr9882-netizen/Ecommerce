@@ -14,6 +14,10 @@ spec:
       labels:
         app: notification-service
     spec:
+      {{- if .Values.image.pullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecretName }}
+      {{- end }}
       initContainers:
         - name: wait-for-deps
           image: redis:7-alpine
