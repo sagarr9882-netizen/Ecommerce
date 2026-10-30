@@ -7,7 +7,7 @@ image:
   # "{repository}/<service>:{tag}", e.g.
   # cloud-build.cav-test.com/cav-ecommerce/order-service:42
   repository: cloud-build.cav-test.com/cav-ecommerce
-  tag: latest
+  tag: "latest"
   pullPolicy: IfNotPresent
   # Name of the Kubernetes Secret (kubernetes.io/dockerconfigjson) holding
   # credentials for the Artifactory registry above. Required because
@@ -40,7 +40,7 @@ ingress:
 # reads DATABASE_URL from it.
 # ---------------------------------------------------------------------------
 database:
-  host: postgres
+  host: tdm-postgresql-6adf2426120c34c34e709b1f-1cffe6ab.ecommerce.svc.cluster.local
   port: 5432
   user: ecommerce
   password: ecommerce123
