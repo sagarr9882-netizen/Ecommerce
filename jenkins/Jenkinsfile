@@ -51,6 +51,14 @@ pipeline {
 
     environment {
         IMAGE_TAG = "${BUILD_NUMBER}"
+        // What actually gets written into values.yaml's image.tag. When this run built
+        // and pushed new images, that's the immutable build-number tag (IMAGE_TAG) - same
+        // as before. When Run_Build_And_Push is false (reusing an existing image, no new
+        // build this run), IMAGE_TAG was never actually built/pushed, so deploying it would
+        // point the cluster at a tag that doesn't exist -> ImagePullBackOff. Deploy "latest"
+        // instead, which executeBuildAndPush() always keeps pointed at whatever image was
+        // last actually pushed.
+        DEPLOY_IMAGE_TAG = "${params.Run_Build_And_Push ? BUILD_NUMBER : 'latest'}"
     }
 
     stages {
@@ -156,7 +164,7 @@ def executeBuildAndPush() {
         : discovered
 
     if (SERVICES.isEmpty()) error "No services to build (discovered: ${discovered}, requested: ${params.TARGET_SERVICES})"
-    echo "Building: ${SERVICES} -> ${params.ARTIFACTORY_REGISTRY}/${params.ARTIFACTORY_REPO}/<service>:${env.IMAGE_TAG}"
+    echo "Building: ${SERVICES} -> ${params.ARTIFACTORY_REGISTRY}/${params.ARTIFACTORY_REPO}/<service>:${env.IMAGE_TAG} (and :latest)"
 
     // Jenkins credential ARTIFACTORY_CRED_ID should hold username sagar.singh
     // + the Artifactory password/API key (added separately, not in this file).
@@ -176,14 +184,25 @@ def executeBuildAndPush() {
     }
     parallel builds
 
+    // Also tag + push ":latest" alongside the immutable build-number tag, so
+    // "latest" always points at whatever this job last built - that's what
+    // lets a later run skip Build + Push entirely (Run_Build_And_Push=false)
+    // and still have a real, already-pushed image to deploy. See
+    // resolveDeployTag() / Run_Build_And_Push handling below.
     Map pushes = [:]
     SERVICES.each { service ->
         pushes[service] = {
-            def imageRef = "${params.ARTIFACTORY_REGISTRY}/${params.ARTIFACTORY_REPO}/${service}:${env.IMAGE_TAG}"
-            def pushOutput = sh(script: "docker push ${imageRef}", returnStdout: true).trim()
+            def repo = "${params.ARTIFACTORY_REGISTRY}/${params.ARTIFACTORY_REPO}/${service}"
+            def buildRef = "${repo}:${env.IMAGE_TAG}"
+            def latestRef = "${repo}:latest"
+            sh "docker tag ${buildRef} ${latestRef}"
+
+            def pushOutput = sh(script: "docker push ${buildRef}", returnStdout: true).trim()
             echo pushOutput
             SERVICE_DIGESTS[service] = extractDigest(pushOutput)
-            sh "docker rmi ${imageRef} || true"
+
+            sh "docker push ${latestRef}"
+            sh "docker rmi ${buildRef} ${latestRef} || true"
         }
     }
     parallel pushes
@@ -216,7 +235,7 @@ def updateHelmValuesAndPush() {
         def values = "gitops-repo/charts/ecommerce/values.yaml"
 
         sh """
-            sed -i "s|^  tag: .*|  tag: \\"${env.IMAGE_TAG}\\"|" "${values}"
+            sed -i "s|^  tag: .*|  tag: \\"${env.DEPLOY_IMAGE_TAG}\\"|" "${values}"
         """
 
         if (env.TDM_CLONE_READY == "true") {
@@ -224,9 +243,9 @@ def updateHelmValuesAndPush() {
                 sed -i "s|^  host: .*|  host: ${env.TDM_CONNECT_HOST}|" "${values}"
                 sed -i "s|^  port: .*|  port: ${env.TDM_CONNECT_PORT}|" "${values}"
             """
-            echo "values.yaml: image.tag=${env.IMAGE_TAG}, database.host=${env.TDM_CONNECT_HOST}, database.port=${env.TDM_CONNECT_PORT}"
+            echo "values.yaml: image.tag=${env.DEPLOY_IMAGE_TAG}, database.host=${env.TDM_CONNECT_HOST}, database.port=${env.TDM_CONNECT_PORT}"
         } else {
-            echo "values.yaml: image.tag=${env.IMAGE_TAG} (database.host/port left as-is - no TDM clone this run)"
+            echo "values.yaml: image.tag=${env.DEPLOY_IMAGE_TAG} (database.host/port left as-is - no TDM clone this run)"
         }
 
         sh """
@@ -235,7 +254,7 @@ def updateHelmValuesAndPush() {
             if git diff-index --quiet HEAD --; then
                 echo "No changes to values.yaml - skipping commit/push."
             else
-                git commit -m "CI/CD: image ${env.IMAGE_TAG}${env.TDM_CLONE_READY == 'true' ? ", TDM clone ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}" : ""} - Build #${env.BUILD_NUMBER}"
+                git commit -m "CI/CD: image ${env.DEPLOY_IMAGE_TAG}${env.TDM_CLONE_READY == 'true' ? ", TDM clone ${env.TDM_CONNECT_HOST}:${env.TDM_CONNECT_PORT}" : ""} - Build #${env.BUILD_NUMBER}"
                 git push "${authedRemote}" HEAD:${params.GITOPS_BRANCH}
                 echo "Pushed - Flux will reconcile charts/ecommerce on its next poll."
             fi
