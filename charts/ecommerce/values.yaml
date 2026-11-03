@@ -30,14 +30,25 @@ ingress:
 # Postgres connection. host/port are a SINGLE shared value for all three
 # services - auth/product/order only differ by database NAME, not by host.
 #
-# THIS is the block the Jenkins pipeline overwrites after the TDM clone step:
-# TdmCloneLifecycleExecutor publishes TDM_CONNECT_HOST / TDM_CONNECT_PORT as
-# build env vars once a Kubernetes-mode clone is ready (an in-cluster DNS
-# name like tdm-postgresql-<id>-<hash>.ecommerce.svc.cluster.local:5432) -
-# the pipeline's "Update Git Manifests & Deploy" stage patches database.host/
-# database.port here, commits, and pushes; Flux's HelmRelease picks up the
-# commit and re-renders the Secret with the new host, rolling every pod that
-# reads DATABASE_URL from it.
+# Two different ways the Jenkins pipeline keeps this pointed at a live TDM
+# clone, depending on the "TDM Cloning" step's "Run Clone" checkbox
+# (TdmCloneCreateStep/Builder's runClone field, default false):
+#   - runClone=true  (not used by this pipeline, kept for completeness/manual
+#     use): TDM runs its own engine Pod. TdmCloneLifecycleExecutor publishes
+#     TDM_CONNECT_HOST/TDM_CONNECT_PORT - an in-cluster DNS name like
+#     tdm-postgresql-<id>-<hash>.ecommerce.svc.cluster.local:5432 - and the
+#     pipeline patches database.host/database.port here directly, with
+#     postgres.enabled left false (the app talks straight to TDM's Pod).
+#   - runClone=false (what this pipeline actually sends - see
+#     runTdmCloningOnly() in the Jenkinsfile): TDM only creates/extends the
+#     clone's storage and NFS-exports it, publishing TDM_CLONE_NFS_SERVER/
+#     TDM_CLONE_NFS_EXPORT_PATH instead. The pipeline sets postgres.enabled
+#     true and postgres.nfs.server/path below instead, and resets
+#     database.host/port back to this chart's OWN "postgres"/5432 Service -
+#     the chart's own postgres.yaml (not TDM) is what actually runs the
+#     database, NFS-mounting the clone's exported data directory directly.
+# Either way: commit+push, Flux's HelmRelease picks up the commit and
+# re-renders, rolling every pod that reads DATABASE_URL from the Secret.
 # ---------------------------------------------------------------------------
 database:
   host: tdm-postgresql-6adf2426120c34c34e709b1f-2b478fee.ecommerce.svc.cluster.local
@@ -49,13 +60,23 @@ database:
     product: ecommerce_products
     order: ecommerce_orders
 
-# In-cluster Postgres StatefulSet - OFF by default because the `database`
-# block above is expected to point at a TDM-provisioned clone instead. Turn
-# this on only for a standalone run with no TDM behind it (and point
-# database.host/port back at "postgres"/5432 to match).
+# In-cluster Postgres StatefulSet. OFF by default - either database.* above
+# points straight at a TDM-run engine Pod (runClone=true), or this is a
+# standalone run with no TDM behind it at all.
+#
+# nfs.enabled true is the runClone=false path above: postgres.yaml mounts
+# the TDM clone's own NFS export directly (volumes[].nfs, no PVC/
+# StorageClass involved) instead of provisioning its own empty
+# volumeClaimTemplates storage - see that template's own comment for the
+# baked-in-credentials open risk this carries. nfs.server/path are
+# meaningless (and ignored by the template) while nfs.enabled is false.
 postgres:
   enabled: false
   storage: 5Gi
+  nfs:
+    enabled: false
+    server: ""
+    path: ""
 
 mongodb:
   storage: 5Gi

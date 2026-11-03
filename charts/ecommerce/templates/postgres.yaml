@@ -41,8 +41,17 @@ spec:
               valueFrom: { secretKeyRef: { name: ecommerce-secrets, key: POSTGRES_PASSWORD } }
             - name: POSTGRES_DB
               value: ecommerce
+            {{- if not .Values.postgres.nfs.enabled }}
+            # Only meaningful on a FRESH/empty volume - Postgres applies
+            # POSTGRES_USER/PASSWORD/DB solely on first init of an empty
+            # data directory. A TDM-clone NFS mount below is already a
+            # populated data directory (see that branch's own comment), so
+            # these three env vars are harmless-but-ignored there - this
+            # var is the one actually mode-sensitive, since the clone's own
+            # export root IS the data directory (no "pgdata" subfolder).
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            {{- end }}
           readinessProbe:
             exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"] }
             initialDelaySeconds: 5
@@ -57,6 +66,30 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+      {{- if .Values.postgres.nfs.enabled }}
+      # "Run Clone"=false path (TDM Jenkins plugin's "TDM Cloning" step) -
+      # mount the TDM clone's own NFS export directly, exactly the way
+      # TDM's own engine Pod would (see the tdm-postgresql-* Pod this
+      # mirrors: a bare `nfs: {server, path}` volume, no PVC/StorageClass
+      # involved at all). This directory is an ALREADY-POPULATED Postgres
+      # data directory (a ZFS clone of the golden database), not empty
+      # storage to initialize - that's why PGDATA is left unset above and
+      # POSTGRES_USER/PASSWORD/DB are ignored on this path: whatever roles/
+      # databases already exist in the clone's data are what Postgres
+      # actually uses. OPEN RISK, not yet verified: this assumes the
+      # clone's baked-in Postgres role matches database.user/password
+      # below (ecommerce/ecommerce123) - if the golden database was never
+      # provisioned with that exact role, the app's services will fail to
+      # authenticate against this clone even though Postgres itself starts
+      # fine. Confirm (or adjust database.user/password here, or the
+      # golden database's own role) before relying on this in production.
+      volumes:
+        - name: data
+          nfs:
+            server: {{ .Values.postgres.nfs.server | quote }}
+            path: {{ .Values.postgres.nfs.path | quote }}
+      {{- end }}
+  {{- if not .Values.postgres.nfs.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -65,4 +98,5 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storage }}
+  {{- end }}
 {{- end }}
