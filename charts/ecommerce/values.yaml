@@ -7,7 +7,7 @@ image:
   # "{repository}/<service>:{tag}", e.g.
   # cloud-build.cav-test.com/cav-ecommerce/order-service:42
   repository: cloud-build.cav-test.com/cav-ecommerce
-  tag: "16"
+  tag: "17"
   pullPolicy: IfNotPresent
   # Name of the Kubernetes Secret (kubernetes.io/dockerconfigjson) holding
   # credentials for the Artifactory registry above. Required because
@@ -76,7 +76,7 @@ postgres:
   nfs:
     enabled: true
     server: "66.220.31.151"
-    path: "/tank1/db/ecommerce-clones/Ecommerce_test-snapshot-1-clone-6"
+    path: "/tank1/db/ecommerce-clones/Ecommerce_test-snapshot-1-clone-7"
 
 mongodb:
   storage: 5Gi
