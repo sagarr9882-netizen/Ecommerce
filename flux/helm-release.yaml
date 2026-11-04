@@ -24,6 +24,19 @@ spec:
       reconcileStrategy: Revision
   install:
     createNamespace: true
+  upgrade:
+    # Needed because of charts/ecommerce/templates/postgres.yaml's
+    # postgres.nfs.enabled switch: flipping it adds/removes the
+    # StatefulSet's volumeClaimTemplates block entirely (PVC-backed volume
+    # <-> plain NFS volume), and Kubernetes forbids changing
+    # volumeClaimTemplates on an EXISTING StatefulSet via a normal
+    # patch/apply - that part of the upgrade is silently rejected, so the
+    # StatefulSet (and the running pod's mount) just stays on whatever it
+    # was before, even though values.yaml and the HelmRelease itself show
+    # "upgraded" successfully. `force: true` makes Helm delete+recreate
+    # any resource whose update is rejected for an immutable-field reason
+    # like this, instead of leaving it stuck on the old definition.
+    force: true
   # Deliberately no `spec.values` override - the chart's own values.yaml
   # (charts/ecommerce/values.yaml, inside this same repo) is the single
   # source of truth, and the Jenkins pipeline edits THAT file directly
