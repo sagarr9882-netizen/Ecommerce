@@ -7,7 +7,7 @@ image:
   # "{repository}/<service>:{tag}", e.g.
   # cloud-build.cav-test.com/cav-ecommerce/order-service:42
   repository: cloud-build.cav-test.com/cav-ecommerce
-  tag: "latest"
+  tag: "12"
   pullPolicy: IfNotPresent
   # Name of the Kubernetes Secret (kubernetes.io/dockerconfigjson) holding
   # credentials for the Artifactory registry above. Required because
@@ -51,8 +51,8 @@ ingress:
 # re-renders, rolling every pod that reads DATABASE_URL from the Secret.
 # ---------------------------------------------------------------------------
 database:
-  host: 66.220.31.151
-  port: 5434
+  host: postgres
+  port: 5432
   user: ecommerce
   password: ecommerce123
   names:
@@ -71,12 +71,12 @@ database:
 # baked-in-credentials open risk this carries. nfs.server/path are
 # meaningless (and ignored by the template) while nfs.enabled is false.
 postgres:
-  enabled: false
+  enabled: true
   storage: 5Gi
   nfs:
-    enabled: false
-    server: ""
-    path: ""
+    enabled: true
+    server: "66.220.31.151"
+    path: "/tank1/db/ecommerce-clones/Ecommerce_test-snapshot-1-clone-2"
 
 mongodb:
   storage: 5Gi
